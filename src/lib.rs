@@ -59,13 +59,13 @@ pub trait Ruw {
         new: Self::State,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
-    /// Report success
+    /// Report success.
     fn accept(track: Self::TrackMany);
 
-    /// Report many failures
+    /// Report many failures.
     fn reject(track: Self::TrackMany, error: Self::Error);
 
-    /// Convert [`Ruw::TrackOne`] to [`Ruw::TrackMany`]
+    /// Convert [`Ruw::TrackOne`] to [`Ruw::TrackMany`].
     fn many(one: Self::TrackOne) -> Self::TrackMany {
         let mut track: Self::TrackMany = Default::default();
         track.extend(Some(one));
