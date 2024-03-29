@@ -2,6 +2,18 @@
 name = "ruw"
 version = "0.0.1"
 edition = "2021"
+publish = true
+description = "Read-Update-Write"
+documentation = "https://docs.rs/ruw"
+keywords = ["async", "no_std"]
+categories = ["asynchronous", "no-std"]
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/parrrate/ruw"
+authors = [
+    "Alisa Feistel <alisafeistel@gmail.com>",
+    "Timofey Prikhodko <tim@ongoteam.yaconnect.com>",
+]
 rust-version = "1.75"
 
 [dependencies]
