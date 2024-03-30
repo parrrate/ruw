@@ -5,6 +5,7 @@ use core::{
 
 use futures_core::{FusedStream, Stream};
 
+#[must_use]
 pub(crate) struct StreamIter<'a, 'cx, S> {
     stream: Pin<&'a mut S>,
     cx: &'a mut Context<'cx>,

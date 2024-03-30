@@ -19,13 +19,16 @@ mod stream_iter;
 /// * Keeps two update tracks while [`Ruw::write`] is in progress
 ///     * Based on old state, applied if write fails
 ///     * Based on new state, applied if write succeeds
-/// * On failed [`Ruw::read`], rejects one action
+/// * On failed [`Ruw::read`], rejects all incoming actions that have already arrived (insta-ready on [`poll_next`])
 /// * On failed [`Ruw::write`], rejects all actions that went into the new [`Ruw::State`]
 /// * On failed [`Ruw::update`] on either of two update tracks, rejects that action
 /// * All updates are supposed to be synchronous and in-memory
+///
+/// [`poll_next`]: futures_core::Stream::poll_next
+#[must_use]
 pub trait Ruw {
-    /// Central type for RUW. In [`std`] and [`alloc`] contexts,
-    /// should rely on [`Arc`] to reduce cloning overhead.
+    /// Central type for RUW. In [`std`] and [`alloc`] contexts, should rely on [`Arc`] to reduce
+    /// cloning overhead.
     ///
     /// [`std`]: https://doc.rust-lang.org/stable/std/
     ///
@@ -43,16 +46,24 @@ pub trait Ruw {
     /// Something to report completion of one action.
     type TrackOne;
 
-    /// Something to report completion of one or more actions.
+    /// Something to report completion of zero or more actions.
     type TrackMany: Default + Extend<Self::TrackOne>;
 
     /// Try asynchronously reading the state.
+    ///
+    /// This should almost never fail. An error here is considered temporarily fatal draining and
+    /// rejecting the whole queue.
     fn read(&self) -> impl Future<Output = Result<Self::State, Self::Error>>;
 
     /// Try updating the state.
+    ///
+    /// This method is ran twice if [`Ruw::write`] is in process. Failure of either one is taken as
+    /// failure of both.
     fn update(state: Self::State, delta: Self::Delta) -> Result<Self::State, Self::Error>;
 
     /// Try asynchronously writing the state. Takes previous state for audit/logging/consistency.
+    ///
+    /// Restoration of failed state is out of scope for the current version.
     fn write(
         &self,
         old: Self::State,
@@ -60,19 +71,25 @@ pub trait Ruw {
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Report success.
+    ///
+    /// There is no `accept_one` function because the implementation is optimistic about being able
+    /// to fit many changes into one state transition.
     fn accept(track: Self::TrackMany);
 
     /// Report many failures.
     fn reject(track: Self::TrackMany, error: Self::Error);
 
     /// Convert [`Ruw::TrackOne`] to [`Ruw::TrackMany`].
+    #[must_use]
     fn many(one: Self::TrackOne) -> Self::TrackMany {
         let mut track: Self::TrackMany = Default::default();
         track.extend(Some(one));
         track
     }
 
-    /// Report one failure
+    /// Report one failure.
+    ///
+    /// Used when [`Ruw::update`] fails.
     fn reject_one(one: Self::TrackOne, error: Self::Error) {
         Self::reject(Self::many(one), error);
     }
@@ -89,18 +106,35 @@ pub async fn ruw<R: Ruw>(ruw: &R, incoming: impl FusedStream<Item = (R::Delta, R
     .await
 }
 
+fn update_or_reject<R: Ruw>(
+    state: R::State,
+    delta: R::Delta,
+    track: R::TrackOne,
+) -> Option<(R::State, R::TrackOne)> {
+    match R::update(state, delta) {
+        Ok(state) => Some((state, track)),
+        Err(error) => {
+            R::reject_one(track, error);
+            None
+        }
+    }
+}
+
 #[pin_project]
+#[must_use]
 struct Reading<R: Ruw, Rf> {
     #[pin]
     future: Rf,
     item: Option<(R::Delta, R::TrackOne)>,
 }
 
+#[must_use]
 struct HeadState<R: Ruw> {
     fallback: R::State,
     success: R::State,
 }
 
+#[must_use]
 struct HsIter<'a, R: Ruw, I> {
     state: &'a mut HeadState<R>,
     iter: I,
@@ -112,10 +146,14 @@ impl<'a, R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for HsIte
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let (delta, track) = self.iter.next()?;
-            let Ok(fallback) = R::update(self.state.fallback.clone(), delta.clone()) else {
+            let Some((fallback, track)) =
+                update_or_reject::<R>(self.state.fallback.clone(), delta.clone(), track)
+            else {
                 continue;
             };
-            let Ok(success) = R::update(self.state.success.clone(), delta) else {
+            let Some((success, track)) =
+                update_or_reject::<R>(self.state.success.clone(), delta, track)
+            else {
                 continue;
             };
             self.state.fallback = fallback;
@@ -125,6 +163,7 @@ impl<'a, R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for HsIte
     }
 }
 
+#[must_use]
 struct Head<R: Ruw> {
     state: HeadState<R>,
     track: R::TrackMany,
@@ -161,10 +200,12 @@ impl<R: Ruw> Extend<(R::Delta, R::TrackOne)> for Head<R> {
     }
 }
 
+#[must_use]
 struct TailState<R: Ruw> {
     next: R::State,
 }
 
+#[must_use]
 struct TsIter<'a, R: Ruw, I> {
     state: &'a mut TailState<R>,
     iter: I,
@@ -176,7 +217,9 @@ impl<'a, R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for TsIte
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let (delta, track) = self.iter.next()?;
-            let Ok(state) = R::update(self.state.next.clone(), delta.clone()) else {
+            let Some((state, track)) =
+                update_or_reject::<R>(self.state.next.clone(), delta.clone(), track)
+            else {
                 continue;
             };
             self.state.next = state;
@@ -185,6 +228,7 @@ impl<'a, R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for TsIte
     }
 }
 
+#[must_use]
 struct Tail<R: Ruw> {
     prev: R::State,
     state: TailState<R>,
@@ -232,6 +276,7 @@ impl<R: Ruw> Extend<(R::Delta, R::TrackOne)> for Tail<R> {
     }
 }
 
+#[must_use]
 struct WriteState<R: Ruw> {
     tail: Option<Tail<R>>,
     head: Option<Head<R>>,
@@ -267,10 +312,14 @@ impl<R: Ruw> Extend<(R::Delta, R::TrackOne)> for WriteState<R> {
                 }
                 None => match iter.next() {
                     Some((delta, track)) => {
-                        let Ok(fallback) = R::update(tail.prev.clone(), delta.clone()) else {
+                        let Some((fallback, track)) =
+                            update_or_reject::<R>(tail.prev.clone(), delta.clone(), track)
+                        else {
                             continue;
                         };
-                        let Ok(success) = R::update(tail.state.next.clone(), delta) else {
+                        let Some((success, track)) =
+                            update_or_reject::<R>(tail.state.next.clone(), delta, track)
+                        else {
                             continue;
                         };
                         self.head = Some(Head {
@@ -288,6 +337,7 @@ impl<R: Ruw> Extend<(R::Delta, R::TrackOne)> for WriteState<R> {
 }
 
 #[pin_project]
+#[must_use]
 struct Writing<R: Ruw, Wf> {
     #[pin]
     future: Wf,
@@ -296,6 +346,7 @@ struct Writing<R: Ruw, Wf> {
 
 #[derive(Default)]
 #[pin_project(project = StateProj)]
+#[must_use]
 enum State<R: Ruw, Rf, Wf> {
     #[default]
     Stale,
@@ -322,6 +373,7 @@ impl<R: Ruw, Wf: Future<Output = Result<(), R::Error>>, Write: Fn(R::State, R::S
 }
 
 #[pin_project]
+#[must_use]
 struct Ruwing<R: Ruw, Read: ReadFn<R>, Write: WriteFn<R>, S> {
     #[pin]
     incoming: S,
@@ -329,6 +381,17 @@ struct Ruwing<R: Ruw, Read: ReadFn<R>, Write: WriteFn<R>, S> {
     state: State<R, Read::Rf, Write::Wf>,
     read: Read,
     write: Write,
+}
+
+#[must_use]
+struct RejectMany<'a, R: Ruw> {
+    track: &'a mut R::TrackMany,
+}
+
+impl<R: Ruw> Extend<(R::Delta, R::TrackOne)> for RejectMany<'_, R> {
+    fn extend<T: IntoIterator<Item = (R::Delta, R::TrackOne)>>(&mut self, iter: T) {
+        self.track.extend(iter.into_iter().map(|(_, track)| track))
+    }
 }
 
 impl<
@@ -364,8 +427,10 @@ impl<
                             let mut item = reading.item.take();
                             loop {
                                 match item.take() {
-                                    Some((delta, track)) => match R::update(prev.clone(), delta) {
-                                        Ok(next) => {
+                                    Some((delta, track)) => {
+                                        if let Some((next, track)) =
+                                            update_or_reject::<R>(prev.clone(), delta, track)
+                                        {
                                             let mut tail =
                                                 Tail::<R>::new(prev.clone(), next.clone(), track);
                                             StreamIter::new(incoming.as_mut(), cx)
@@ -373,10 +438,7 @@ impl<
                                             state.as_mut().set(tail.into_state(this.write));
                                             break;
                                         }
-                                        Err(error) => {
-                                            R::reject_one(track, error);
-                                        }
-                                    },
+                                    }
                                     None if incoming.is_terminated() => {
                                         state.as_mut().set(State::Stale);
                                         return Poll::Ready(());
@@ -398,9 +460,17 @@ impl<
                             }
                         }
                         Err(error) => {
-                            if let Some((_, track)) = reading.item.take() {
-                                R::reject_one(track, error);
-                            }
+                            let mut track = reading
+                                .item
+                                .take()
+                                .map(|(_, track)| R::many(track))
+                                .unwrap_or_default();
+                            StreamIter::new(incoming.as_mut(), cx).extend_into(&mut RejectMany::<
+                                R,
+                            > {
+                                track: &mut track,
+                            });
+                            R::reject(track, error);
                             state.as_mut().set(State::Stale);
                         }
                     }

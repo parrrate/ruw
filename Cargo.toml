@@ -1,6 +1,6 @@
 [package]
 name = "ruw"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 publish = true
 description = "Read-Update-Write"
