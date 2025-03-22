@@ -140,7 +140,7 @@ struct HsIter<'a, R: Ruw, I> {
     iter: I,
 }
 
-impl<'a, R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for HsIter<'a, R, I> {
+impl<R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for HsIter<'_, R, I> {
     type Item = R::TrackOne;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -211,7 +211,7 @@ struct TsIter<'a, R: Ruw, I> {
     iter: I,
 }
 
-impl<'a, R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for TsIter<'a, R, I> {
+impl<R: Ruw, I: Iterator<Item = (R::Delta, R::TrackOne)>> Iterator for TsIter<'_, R, I> {
     type Item = R::TrackOne;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -465,11 +465,10 @@ impl<
                                 .take()
                                 .map(|(_, track)| R::many(track))
                                 .unwrap_or_default();
-                            StreamIter::new(incoming.as_mut(), cx).extend_into(&mut RejectMany::<
-                                R,
-                            > {
-                                track: &mut track,
-                            });
+                            {
+                                StreamIter::new(incoming.as_mut(), cx)
+                                    .extend_into(&mut RejectMany::<R> { track: &mut track });
+                            }
                             R::reject(track, error);
                             state.as_mut().set(State::Stale);
                         }
