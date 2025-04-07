@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/parrrate/ruw"
 authors = [
     "Alisa Feistel <alisafeistel@gmail.com>",
-    "Timofey Prikhodko <tim@ongoteam.yaconnect.com>",
+    "Clementina Prikhodko <tim@ongoteam.yaconnect.com>",
 ]
 rust-version = "1.75"
 
