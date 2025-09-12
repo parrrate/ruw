@@ -1,3 +1,5 @@
+//! Read-Update-Write
+
 #![no_std]
 
 use core::{
@@ -12,42 +14,71 @@ use crate::stream_iter::StreamIter;
 
 mod stream_iter;
 
+/// Red-Update-Write system
+///
+/// * Keeps two update tracks while [`Ruw::write`] is in progress
+///     * Based on old state, applied if write fails
+///     * Based on new state, applied if write succeeds
+/// * On failed [`Ruw::read`], rejects one action
+/// * On failed [`Ruw::write`], rejects all actions that went into the new [`Ruw::State`]
+/// * On failed [`Ruw::update`] on either of two update tracks, rejects that action
+/// * All updates are supposed to be synchronous and in-memory
 pub trait Ruw {
+    /// Central type for RUW. In [`std`] and [`alloc`] contexts,
+    /// should rely on [`Arc`] to reduce cloning overhead.
+    ///
+    /// [`std`]: https://doc.rust-lang.org/stable/std/
+    ///
+    /// [`alloc`]: https://doc.rust-lang.org/stable/alloc/
+    ///
+    /// [`Arc`]: https://doc.rust-lang.org/stable/std/sync/struct.Arc.html
     type State: Clone;
 
+    /// A single change applied to [`Ruw::State`] by [`Ruw::update`].
     type Delta: Clone;
 
+    /// Represents either I/O error ([`Ruw::read`] and [`Ruw::write`]) or update error.
     type Error;
 
+    /// Something to report completion of one action.
     type TrackOne;
 
+    /// Something to report completion of one or more actions.
     type TrackMany: Default + Extend<Self::TrackOne>;
 
+    /// Try asynchronously reading the state.
     fn read(&self) -> impl Future<Output = Result<Self::State, Self::Error>>;
 
+    /// Try updating the state.
     fn update(state: Self::State, delta: Self::Delta) -> Result<Self::State, Self::Error>;
 
+    /// Try asynchronously writing the state. Takes previous state for audit/logging/consistency.
     fn write(
         &self,
         old: Self::State,
         new: Self::State,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
+    /// Report success
     fn accept(track: Self::TrackMany);
 
+    /// Report many failures
     fn reject(track: Self::TrackMany, error: Self::Error);
 
+    /// Convert [`Ruw::TrackOne`] to [`Ruw::TrackMany`]
     fn many(one: Self::TrackOne) -> Self::TrackMany {
         let mut track: Self::TrackMany = Default::default();
         track.extend(Some(one));
         track
     }
 
+    /// Report one failure
     fn reject_one(one: Self::TrackOne, error: Self::Error) {
         Self::reject(Self::many(one), error);
     }
 }
 
+/// Run [`Ruw`] daemon until the provided [`FusedStream`] is done.
 pub async fn ruw<R: Ruw>(ruw: &R, incoming: impl FusedStream<Item = (R::Delta, R::TrackOne)>) {
     Ruwing::<R, _, _, _> {
         incoming,
