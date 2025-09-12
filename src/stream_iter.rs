@@ -21,16 +21,18 @@ impl<'a, 'cx, S> StreamIter<'a, 'cx, S> {
         S: FusedStream,
     {
         if !self.stream.is_terminated() {
-            collection.extend(self)
+            collection.extend(SiImpl(self))
         }
     }
 }
 
-impl<'a, 'cx, S: Stream> Iterator for StreamIter<'a, 'cx, S> {
+struct SiImpl<'a, 'cx, S>(StreamIter<'a, 'cx, S>);
+
+impl<S: Stream> Iterator for SiImpl<'_, '_, S> {
     type Item = S::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.stream.as_mut().poll_next(self.cx) {
+        match self.0.stream.as_mut().poll_next(self.0.cx) {
             Poll::Ready(next) => next,
             Poll::Pending => None,
         }
