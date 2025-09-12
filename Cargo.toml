@@ -1,6 +1,6 @@
 [package]
 name = "ruw"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 publish = true
 description = "Read-Update-Write"
@@ -14,7 +14,7 @@ authors = ["Alisa Feistel <alisafeistel@gmail.com>"]
 rust-version = "1.75"
 
 [dependencies]
-futures-core = "0.3.30"
+futures-core = { version = "0.3.30", default-features = false }
 pin-project = "1"
 
 [dev-dependencies]
