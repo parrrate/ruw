@@ -14,7 +14,7 @@ use crate::stream_iter::StreamIter;
 
 mod stream_iter;
 
-/// Red-Update-Write system
+/// Read-Update-Write system.
 ///
 /// * Keeps two update tracks while [`Ruw::write`] is in progress
 ///     * Based on old state, applied if write fails
